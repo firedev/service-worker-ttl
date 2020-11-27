@@ -1,9 +1,7 @@
-const version = 1
+/* eslint-disable no-restricted-globals */
+
+const version = 3
 const cacheName = `ttl-${version}`
-const state = {
-  online: false,
-  server: false,
-}
 const TTL = 10 // sec
 
 async function clearCaches() {
@@ -11,51 +9,43 @@ async function clearCaches() {
   const oldCacheNames = cacheNames.filter((cache) => {
     if (/^ttl-\d+$/.test(cache)) {
       let [, cacheVersion] = cache.match(/^ttl-(\d+)$/)
-      cacheVersion = (cacheVersion != null) ? Number(cacheVersion) : 0
-      return (
-        cacheVersion > 0 && cacheVersion !== version
-      )
+      cacheVersion = cacheVersion != null ? Number(cacheVersion) : 0
+      return cacheVersion > 0 && cacheVersion !== version
     }
     return false
   })
   return Promise.all(oldCacheNames.map((cache) => caches.delete(cache)))
 }
 
-const sendState = () => sendMessage({
-  state: {
-    ...state,
-    TTL: `${TTL} sec`,
-  },
-})
-
-const onMessage = ({
-  data,
-}) => {
-  console.log('sw/onmessage', data)
-  state.online = data.state.online
-  state.server = data.state.server
-  sendState()
+function notFoundResponse() {
+  console.log('page not found')
+  return new Response('', {
+    status: 404,
+    statusText: 'Not Found',
+  })
 }
 
-async function sendMessage(msg) {
-  // eslint-disable-next-line no-undef
-  const allClients = await clients.matchAll({
-    includeUncontrolled: true,
-  })
-  return Promise.all(
-    allClients.map((client) => {
-      const channel = new MessageChannel()
-      channel.port1.onmessage = onMessage
-      return client.postMessage(msg, [channel.port2])
-    }),
-  )
+function isFresh(cachedRequest) {
+  const requestDate = new Date(cachedRequest.headers.get('date'))
+  const secondsCached = new Date() - requestDate
+  console.log(`cached for ${parseInt(secondsCached / 1000, 10)} sec`)
+  const fresh = new Date() - requestDate < TTL * 1000
+  return fresh
 }
 
 async function router(req) {
-  // const url = new URL(req.url)
-  // const reqURL = url.pathname
-  // const cache = await caches.open(cacheName)
-  return fetch(req.url).catch(console.log)
+  const { pathname } = new URL(req.url)
+  const cache = await caches.open(cacheName)
+  const cachedRequest = await cache.match(pathname)
+  if (cachedRequest && isFresh(cachedRequest)) {
+    return cachedRequest
+  }
+  const res = await fetch(req.url).catch(console.log)
+  if (res && res.ok) {
+    await cache.put(pathname, res.clone())
+    return res
+  }
+  return cachedRequest || notFoundResponse()
 }
 
 const onFetch = (event) => {
@@ -75,16 +65,15 @@ async function onActivate(event) {
 
 function onInstall() {
   console.log(`worker v${version} is installed`)
-  this.skipWaiting()
+  self.skipWaiting()
 }
 
 async function main() {
-  console.log('sw/main')
+  console.log(`worker v${version} started`)
 }
 
-this.addEventListener('install', onInstall)
-this.addEventListener('activate', onActivate)
-this.addEventListener('message', onMessage)
-this.addEventListener('fetch', onFetch)
+self.addEventListener('install', onInstall)
+self.addEventListener('activate', onActivate)
+self.addEventListener('fetch', onFetch)
 
 main().catch(console.error)
